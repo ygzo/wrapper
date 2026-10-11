@@ -30,6 +30,9 @@ static std::string g_memory = "512";
 static std::string g_smp = "2";
 static std::string g_forcedAccel;
 static std::string g_qemuBin;
+static bool g_gdb = false;
+static std::string g_gdbPort = "1234";
+static bool g_gdbWait = false;
 
 static std::string getEnv(const char* name, const std::string& def) {
     const char* v = std::getenv(name);
@@ -333,6 +336,13 @@ static std::vector<std::string> buildQemuArgs(const std::string& qemuBin,
     args.push_back("user,model=e1000,hostfwd=tcp:" + g_host + ":" + g_hostPort + "-:" + g_guestPort);
     args.push_back("-drive");
     args.push_back("file=" + dir + "/data.img,format=raw,if=virtio");
+    if (g_gdb) {
+        args.push_back("-gdb");
+        args.push_back("tcp::" + g_gdbPort);
+    }
+    if (g_gdbWait) {
+        args.push_back("-S");
+    }
     std::ifstream af(argsFile);
     if (af.peek() != std::ifstream::traits_type::eof()) {
         args.push_back("-fw_cfg");
@@ -358,14 +368,22 @@ int main(int argc, char** argv) {
     g_smp = getEnv("SMP", "2");
     g_forcedAccel = getEnv("LITE_QEMU_ACCEL", "");
     g_qemuBin = getEnv("QEMU_BIN", "");
+    g_gdb = !getEnv("LITE_QEMU_GDB", "").empty();
+    g_gdbPort = getEnv("LITE_QEMU_GDB_PORT", "1234");
+    g_gdbWait = !getEnv("LITE_QEMU_GDB_WAIT", "").empty();
 
     std::vector<std::string> liteArgs;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         bool wantsValue = (a == "--host" || a == "--host-port" || a == "--guest-port" ||
                            a == "--guest-host" || a == "--memory" || a == "--smp" ||
-                           a == "--accel" || a == "--qemu-bin");
-        if (wantsValue && i + 1 < argc) {
+                           a == "--accel" || a == "--qemu-bin" || a == "--gdb-port");
+        if (a == "--gdb") {
+            g_gdb = true;
+        } else if (a == "--gdb-wait") {
+            g_gdb = true;
+            g_gdbWait = true;
+        } else if (wantsValue && i + 1 < argc) {
             std::string v = argv[++i];
             if (a == "--host") g_host = v;
             else if (a == "--host-port") g_hostPort = v;
@@ -375,6 +393,7 @@ int main(int argc, char** argv) {
             else if (a == "--smp") g_smp = v;
             else if (a == "--accel") g_forcedAccel = v;
             else if (a == "--qemu-bin") g_qemuBin = v;
+            else if (a == "--gdb-port") { g_gdb = true; g_gdbPort = v; }
         } else {
             liteArgs.push_back(a);
         }

@@ -27,6 +27,7 @@ void install_hooks();
 bool login(struct shared_ptr ctx);
 void setup_services();
 int offline_available_impl();
+void install_lifecycle_probes();
 
 const char* get_m3u8_download(unsigned long adam);
 const char* get_m3u8_play(unsigned long adam);

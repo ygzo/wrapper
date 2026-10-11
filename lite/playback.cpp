@@ -7,6 +7,9 @@
 #include <mutex>
 #include <dlfcn.h>
 #include <link.h>
+#include <unordered_map>
+#include <atomic>
+#include <pthread.h>
 
 extern const char* const fairplayCert;
 
@@ -152,8 +155,120 @@ static void setup_r1_hook(void) {
     }
 }
 
+struct QSnapshot {
+    uint64_t generation;
+    uint64_t thread_id;
+    uint8_t bytes[16];
+    bool active;
+};
+
+static std::mutex g_probe_mutex;
+static std::atomic<uint64_t> g_gen_counter{1};
+static std::unordered_map<uint64_t, QSnapshot> g_tracked_q;
+
+// Probe 1: 0x1F6D3D (after PRNG generation into Q+0x20C)
+extern "C" void probe_1_prng_cb(RegisterContext* ctx, const HookEntryInfo* info) {
+    (void)info;
+    uint64_t rbp = ctx->general.regs.rbp;
+    uint64_t tid = (uint64_t)pthread_self();
+    uint64_t enc_q = *(uint64_t*)(uintptr_t)(rbp - 0xC18);
+    uint64_t q = enc_q - 0x9086B99254CC37B8ULL;
+    if (q < 0x10000 || q > 0x7fffffffffffULL) return;
+    uint8_t* q_20c = (uint8_t*)(uintptr_t)(q + 0x20C);
+
+    uint64_t gen = g_gen_counter.fetch_add(1);
+    QSnapshot snap;
+    snap.generation = gen;
+    snap.thread_id = tid;
+    snap.active = true;
+    memcpy(snap.bytes, q_20c, 16);
+
+    {
+        std::lock_guard<std::mutex> lock(g_probe_mutex);
+        g_tracked_q[q] = snap;
+    }
+    LOG_INFO("[PROBE 1] PRNG complete: Thread=0x%lx Q=0x%llx Gen=%llu (16-byte snapshot recorded)",
+             (unsigned long)tid, (unsigned long long)q, (unsigned long long)gen);
+}
+
+// Probe 2: 0x323820 (Reader before record copying)
+extern "C" void probe_2_reader_cb(RegisterContext* ctx, const HookEntryInfo* info) {
+    (void)info;
+    uint64_t rbp = ctx->general.regs.rbp;
+    uint64_t tid = (uint64_t)pthread_self();
+    uint64_t enc_q = *(uint64_t*)(uintptr_t)(rbp - 0xC18);
+    uint64_t q = enc_q - 0x9086B99254CC37B8ULL;
+    if (q < 0x10000 || q > 0x7fffffffffffULL) return;
+    uint8_t* q_20c = (uint8_t*)(uintptr_t)(q + 0x20C);
+
+    std::lock_guard<std::mutex> lock(g_probe_mutex);
+    auto it = g_tracked_q.find(q);
+    if (it != g_tracked_q.end() && it->second.active) {
+        bool match = (memcmp(it->second.bytes, q_20c, 16) == 0);
+        LOG_INFO("[PROBE 2] Reader arrived: Thread=0x%lx Q=0x%llx Gen=%llu BytesMatch=%s",
+                 (unsigned long)tid, (unsigned long long)q,
+                 (unsigned long long)it->second.generation,
+                 match ? "YES (UNCHANGED)" : "NO (DIFFERENT)");
+    } else {
+        LOG_INFO("[PROBE 2] Reader arrived: Thread=0x%lx Q=0x%llx (untracked/inactive)",
+                 (unsigned long)tid, (unsigned long long)q);
+    }
+}
+
+// Probe 3: 0x1B6D31 (Cleanup overwrite)
+extern "C" void probe_3_cleanup_cb(RegisterContext* ctx, const HookEntryInfo* info) {
+    (void)info;
+    uint64_t tid = (uint64_t)pthread_self();
+    uint64_t r10 = ctx->general.regs.r10;
+    uint64_t rcx = ctx->general.regs.rcx;
+    uint64_t dst = r10 + rcx - 1;
+
+    std::lock_guard<std::mutex> lock(g_probe_mutex);
+    for (auto& pair : g_tracked_q) {
+        uint64_t q = pair.first;
+        if (pair.second.active && dst >= q && dst < q + 0x318) {
+            pair.second.active = false;
+            LOG_INFO("[PROBE 3] Cleanup target matched: Thread=0x%lx Q=0x%llx Gen=%llu Dst=0x%llx",
+                     (unsigned long)tid, (unsigned long long)q,
+                     (unsigned long long)pair.second.generation,
+                     (unsigned long long)dst);
+            break;
+        }
+    }
+}
+
+void install_lifecycle_probes(void) {
+    static int probes_installed = 0;
+    if (probes_installed) return;
+    uintptr_t base = get_lib_core_lskd_base();
+    if (!base) {
+        LOG_WARN("cannot install lifecycle probes: libCoreLSKD not loaded");
+        return;
+    }
+    void* p1 = (void*)(base + 0x1f6d3d);
+    void* p2 = (void*)(base + 0x323820);
+    void* p3 = (void*)(base + 0x1b6d31);
+    if (DobbyInstrument(p1, probe_1_prng_cb) == 0) {
+        LOG_INFO("Probe 1 installed @ %p (0x1F6D3D)", p1);
+    } else {
+        LOG_WARN("Probe 1 install failed @ %p", p1);
+    }
+    if (DobbyInstrument(p2, probe_2_reader_cb) == 0) {
+        LOG_INFO("Probe 2 installed @ %p (0x323820)", p2);
+    } else {
+        LOG_WARN("Probe 2 install failed @ %p", p2);
+    }
+    if (DobbyInstrument(p3, probe_3_cleanup_cb) == 0) {
+        LOG_INFO("Probe 3 installed @ %p (0x1B6D31)", p3);
+    } else {
+        LOG_WARN("Probe 3 install failed @ %p", p3);
+    }
+    probes_installed = 1;
+}
+
 static void* preshareCtx = nullptr;
 static void* getKdContext(const std::string& adam, const std::string& uri) {
+    install_lifecycle_probes();
     uint8_t isPreshare = (adam == "0");
     if (isPreshare && preshareCtx) return preshareCtx;
     LOG_INFO("adamId: %s, uri: %s", adam.c_str(), uri.c_str());

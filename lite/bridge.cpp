@@ -202,6 +202,7 @@ extern "C" std::function<void(const int&)> endLeaseCallback(endLeaseCb);
 extern "C" std::function<void(std::shared_ptr<void>)> pbErrCallback(pbErrCb);
 
 void setup_services() {
+    install_lifecycle_probes();
     _ZN22SVPlaybackLeaseManagerC2ERKNSt6__ndk18functionIFvRKiEEERKNS1_IFvRKNS0_10shared_ptrIN17storeservicescore19StoreErrorConditionEEEEEE(
         leaseMgr, &endLeaseCallback, &pbErrCallback);
     uint8_t autom = 1;

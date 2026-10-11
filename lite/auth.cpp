@@ -36,10 +36,22 @@ void dialogHandler(long j, struct shared_ptr* protoDialogPtr,
         }
         LOG_DEBUG("signin button selected: %s", found ? "yes" : "NO");
     } else {
+        int found = 0;
         for (struct shared_ptr* b = (struct shared_ptr*)butVec->begin;
              b != (struct shared_ptr*)butVec->end; ++b) {
-            LOG_INFO("button %p: %s", b->obj,
-                     std_string_data(_ZNK17storeservicescore14ProtocolButton5titleEv(b->obj)));
+            const char* btnTitle = std_string_data(
+                _ZNK17storeservicescore14ProtocolButton5titleEv(b->obj));
+            LOG_INFO("dialog button %p: %s", b->obj, btnTitle ? btnTitle : "(null)");
+            if (btnTitle && (strcasecmp(btnTitle, "Cancel") == 0 || strcasecmp(btnTitle, "OK") == 0)) {
+                _ZN17storeservicescore22ProtocolDialogResponse17setSelectedButtonERKNSt6__ndk110shared_ptrINS_14ProtocolButtonEEE(diagResp.obj, b);
+                found = 1;
+                LOG_INFO("selected '%s' to cancel unhandled dialog", btnTitle);
+                break;
+            }
+        }
+        if (!found && butVec->begin != butVec->end) {
+            _ZN17storeservicescore22ProtocolDialogResponse17setSelectedButtonERKNSt6__ndk110shared_ptrINS_14ProtocolButtonEEE(diagResp.obj, (struct shared_ptr*)butVec->begin);
+            LOG_INFO("selected fallback first button to dismiss unhandled dialog");
         }
     }
     _ZN20androidstoreservices28AndroidPresentationInterface28handleProtocolDialogResponseERKlRKNSt6__ndk110shared_ptrIN17storeservicescore22ProtocolDialogResponseEEE(
