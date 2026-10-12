@@ -282,14 +282,43 @@ static void* getKdContext(const std::string& adam, const std::string& uri) {
     union std_string fpsCert = new_std_string(fairplayCert);
 
     struct shared_ptr persistK = {.obj = nullptr};
-    _ZN21SVFootHillSessionCtrl16getPersistentKeyERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEES8_S8_S8_S8_S8_S8_S8_(
-        &persistK, FHinstance, &defaultId, &defaultId, &keyUri, &keyFormat,
-        &keyFormatVer, &serverUri, &protocolType, &fpsCert);
-    if (!persistK.obj) return nullptr;
+    union std_string onlineCkc = {};
+    union std_string* contextKey = nullptr;
+    const char* nativeCapture = getenv("WRAPPER_NATIVE_CKC_CAPTURE");
+    if (nativeCapture && strcmp(nativeCapture, "1") == 0 && !isPreshare) {
+        using GenerateSession = void (*)(struct shared_ptr*, void*,
+            union std_string*, union std_string*, union std_string*,
+            union std_string*, union std_string*, union std_string*, union std_string*);
+        using CopyCkc = void (*)(union std_string*, void*);
+        using HasValidKey = bool (*)(void*);
+        auto generate = reinterpret_cast<GenerateSession>(dlsym(RTLD_DEFAULT,
+            "_ZN21SVFootHillSessionCtrl22generateSessionContextERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEES8_S8_S8_S8_S8_S8_"));
+        auto copyCkc = reinterpret_cast<CopyCkc>(dlsym(RTLD_DEFAULT,
+            "_ZNK14SVFootHillPKey3ckcEv"));
+        auto hasValidKey = reinterpret_cast<HasValidKey>(dlsym(RTLD_DEFAULT,
+            "_ZNK14SVFootHillPKey11hasValidKeyEv"));
+        if (!generate || !copyCkc || !hasValidKey) {
+            LOG_WARN("native CKC capture: required App symbols unavailable");
+            return nullptr;
+        }
+        generate(&persistK, FHinstance, &defaultId, &keyUri, &keyFormat,
+                 &keyFormatVer, &serverUri, &protocolType, &fpsCert);
+        if (!persistK.obj || !hasValidKey(persistK.obj)) return nullptr;
+        copyCkc(&onlineCkc, persistK.obj);
+        const char* ckcBytes = std_string_data(&onlineCkc);
+        if (!ckcBytes || !*ckcBytes) return nullptr;
+        contextKey = &onlineCkc;
+    } else {
+        _ZN21SVFootHillSessionCtrl16getPersistentKeyERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEES8_S8_S8_S8_S8_S8_S8_(
+            &persistK, FHinstance, &defaultId, &defaultId, &keyUri, &keyFormat,
+            &keyFormatVer, &serverUri, &protocolType, &fpsCert);
+        if (!persistK.obj) return nullptr;
+        contextKey = (union std_string*)persistK.obj;
+    }
 
     struct shared_ptr SVFootHillPContext = {.obj = nullptr, .ctrl_blk = nullptr};
     _ZN21SVFootHillSessionCtrl14decryptContextERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEERKN11SVDecryptor15SVDecryptorTypeERKb(
-        &SVFootHillPContext, FHinstance, (union std_string*)persistK.obj);
+        &SVFootHillPContext, FHinstance, contextKey);
     if (!SVFootHillPContext.obj) return nullptr;
 
     void* kdContext = *_ZNK18SVFootHillPContext9kdContextEv(SVFootHillPContext.obj);
